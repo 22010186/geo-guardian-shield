@@ -3,20 +3,13 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { 
-  Shield, 
-  MapPin, 
-  Clock, 
-  Monitor, 
-  AlertTriangle, 
-  CheckCircle,
-  LogOut,
-  Activity
-} from "lucide-react";
-import { format } from "date-fns";
-import { vi } from "date-fns/locale";
+import { Shield, LogOut } from "lucide-react";
+import { CurrentSessionInfo } from "@/components/dashboard/CurrentSessionInfo";
+import { DeviceFingerprint } from "@/components/dashboard/DeviceFingerprint";
+import { RiskAnalysisChart } from "@/components/dashboard/RiskAnalysisChart";
+import { ActiveSessions } from "@/components/dashboard/ActiveSessions";
+import { SecurityInfrastructure } from "@/components/dashboard/SecurityInfrastructure";
+import { LoginHistoryTable } from "@/components/dashboard/LoginHistoryTable";
 
 interface LoginRecord {
   id: string;
@@ -31,20 +24,32 @@ interface LoginRecord {
   created_at: string;
 }
 
-interface SecurityAlert {
+interface Session {
   id: string;
-  alert_type: string;
-  severity: string;
-  message: string;
-  created_at: string;
-  is_read: boolean;
+  device_name: string;
+  location: string;
+  ip_address: string;
+  is_current: boolean;
+  last_used_at: string;
+}
+
+interface CurrentSession {
+  ip_address: string;
+  location: string;
+  isp: string;
+  browser: string;
+  os: string;
+  device: string;
+  risk_score: number;
 }
 
 const Dashboard = () => {
   const navigate = useNavigate();
   const { user, signOut, loading } = useAuth();
   const [loginHistory, setLoginHistory] = useState<LoginRecord[]>([]);
-  const [alerts, setAlerts] = useState<SecurityAlert[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [currentSession, setCurrentSession] = useState<CurrentSession | null>(null);
+  const [riskData, setRiskData] = useState<Array<{ date: string; riskScore: number }>>([]);
   const [loadingData, setLoadingData] = useState(true);
 
   useEffect(() => {
@@ -68,15 +73,60 @@ const Dashboard = () => {
         .order("created_at", { ascending: false })
         .limit(10);
 
-      // Fetch security alerts
-      const { data: alertsData } = await supabase
-        .from("security_alerts")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(5);
-
       setLoginHistory(logins || []);
-      setAlerts(alertsData || []);
+
+      // Fetch active sessions
+      const { data: sessionsData } = await supabase
+        .from("trusted_devices")
+        .select("*")
+        .eq("is_trusted", true)
+        .order("last_used_at", { ascending: false });
+
+      setSessions(
+        sessionsData?.map((s) => ({
+          id: s.id,
+          device_name: s.device_name || "Unknown Device",
+          location: "Unknown",
+          ip_address: "N/A",
+          is_current: false,
+          last_used_at: s.last_used_at || new Date().toISOString(),
+        })) || []
+      );
+
+      // Get current session info from most recent login
+      if (logins && logins.length > 0) {
+        const latest = logins[0];
+        setCurrentSession({
+          ip_address: latest.ip_address,
+          location: `${latest.city || "Unknown"}, ${latest.country || "Unknown"}`,
+          isp: latest.isp || "Unknown ISP",
+          browser: latest.browser || "Unknown",
+          os: latest.os || "Unknown",
+          device: "Unknown Device",
+          risk_score: latest.risk_score || 0,
+        });
+      }
+
+      // Calculate risk data for chart (last 6 days)
+      const riskByDay: Record<string, number[]> = {};
+      logins?.forEach((login) => {
+        const date = new Date(login.created_at).toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+        });
+        if (!riskByDay[date]) riskByDay[date] = [];
+        riskByDay[date].push(login.risk_score || 0);
+      });
+
+      const chartData = Object.entries(riskByDay)
+        .map(([date, scores]) => ({
+          date,
+          riskScore: Math.round(scores.reduce((a, b) => a + b, 0) / scores.length),
+        }))
+        .slice(0, 6)
+        .reverse();
+
+      setRiskData(chartData);
     } catch (error) {
       console.error("Error fetching dashboard data:", error);
     } finally {
@@ -95,21 +145,6 @@ const Dashboard = () => {
     );
   }
 
-  const getRiskBadge = (score: number) => {
-    if (score >= 70) return <Badge variant="destructive">Cao</Badge>;
-    if (score >= 40) return <Badge className="bg-warning text-warning-foreground">Trung bình</Badge>;
-    return <Badge className="bg-success text-success-foreground">Thấp</Badge>;
-  };
-
-  const getSeverityBadge = (severity: string) => {
-    const variants: Record<string, any> = {
-      critical: "destructive",
-      high: "destructive",
-      medium: "default",
-      low: "secondary",
-    };
-    return <Badge variant={variants[severity] || "default"}>{severity}</Badge>;
-  };
 
   return (
     <div className="min-h-screen bg-gradient-dark">
@@ -130,141 +165,59 @@ const Dashboard = () => {
       </header>
 
       <main className="container mx-auto px-4 py-8">
-        {/* Welcome Section */}
+        {/* Header Section */}
         <div className="mb-8">
-          <h1 className="text-4xl font-bold mb-2 bg-gradient-primary bg-clip-text text-transparent">
-            Chào mừng trở lại!
-          </h1>
-          <p className="text-muted-foreground">{user.email}</p>
+          <h1 className="text-4xl font-bold mb-2">Advanced Security Dashboard</h1>
+          <p className="text-muted-foreground">
+            Monitoring and managing your account's security posture.
+          </p>
         </div>
 
-        {/* Stats Grid */}
-        <div className="grid md:grid-cols-3 gap-6 mb-8">
-          <Card className="border-border/50 shadow-card">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium">Tổng đăng nhập</CardTitle>
-              <Activity className="w-4 h-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{loginHistory.length}</div>
-              <p className="text-xs text-muted-foreground">30 ngày qua</p>
-            </CardContent>
-          </Card>
+        {loadingData ? (
+          <p className="text-center text-muted-foreground py-8">Loading dashboard data...</p>
+        ) : (
+          <div className="space-y-6">
+            {/* Login History Table - Full Width */}
+            <LoginHistoryTable loginHistory={loginHistory} />
 
-          <Card className="border-border/50 shadow-card">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium">Cảnh báo</CardTitle>
-              <AlertTriangle className="w-4 h-4 text-warning" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{alerts.length}</div>
-              <p className="text-xs text-muted-foreground">Chưa đọc</p>
-            </CardContent>
-          </Card>
+            {/* Two Column Layout */}
+            <div className="grid lg:grid-cols-2 gap-6">
+              {/* Left Column */}
+              <div className="space-y-6">
+                {/* Active Sessions */}
+                <ActiveSessions sessions={sessions} onRevoke={fetchDashboardData} />
 
-          <Card className="border-border/50 shadow-card">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium">Trạng thái</CardTitle>
-              <CheckCircle className="w-4 h-4 text-success" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-success">An toàn</div>
-              <p className="text-xs text-muted-foreground">Không phát hiện bất thường</p>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Security Alerts */}
-        {alerts.length > 0 && (
-          <Card className="mb-8 border-border/50 shadow-card">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <AlertTriangle className="w-5 h-5 text-warning" />
-                Cảnh báo bảo mật
-              </CardTitle>
-              <CardDescription>Các cảnh báo gần đây về tài khoản của bạn</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {alerts.map((alert) => (
-                  <div
-                    key={alert.id}
-                    className="flex items-start gap-4 p-4 rounded-lg bg-muted/50 border border-border/50"
-                  >
-                    <AlertTriangle className="w-5 h-5 text-warning mt-1" />
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <p className="font-medium">{alert.message}</p>
-                        {getSeverityBadge(alert.severity)}
-                      </div>
-                      <p className="text-sm text-muted-foreground">
-                        {format(new Date(alert.created_at), "PPp", { locale: vi })}
-                      </p>
-                    </div>
-                  </div>
-                ))}
+                {/* Security Infrastructure */}
+                <SecurityInfrastructure />
               </div>
-            </CardContent>
-          </Card>
+
+              {/* Right Column */}
+              <div className="space-y-6">
+                {/* Current Session Info */}
+                {currentSession && (
+                  <CurrentSessionInfo
+                    ipAddress={currentSession.ip_address}
+                    location={currentSession.location}
+                    isp={currentSession.isp}
+                    riskLevel={currentSession.risk_score}
+                  />
+                )}
+
+                {/* Device Fingerprint */}
+                {currentSession && (
+                  <DeviceFingerprint
+                    browser={currentSession.browser}
+                    os={currentSession.os}
+                    device={currentSession.device}
+                  />
+                )}
+
+                {/* Risk Analysis Chart */}
+                {riskData.length > 0 && <RiskAnalysisChart data={riskData} />}
+              </div>
+            </div>
+          </div>
         )}
-
-        {/* Login History */}
-        <Card className="border-border/50 shadow-card">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Clock className="w-5 h-5" />
-              Lịch sử đăng nhập
-            </CardTitle>
-            <CardDescription>10 lần đăng nhập gần nhất</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {loadingData ? (
-              <p className="text-center text-muted-foreground py-8">Đang tải...</p>
-            ) : loginHistory.length === 0 ? (
-              <p className="text-center text-muted-foreground py-8">
-                Chưa có lịch sử đăng nhập
-              </p>
-            ) : (
-              <div className="space-y-4">
-                {loginHistory.map((record) => (
-                  <div
-                    key={record.id}
-                    className="flex items-start gap-4 p-4 rounded-lg bg-muted/50 border border-border/50 hover:border-primary/50 transition-colors"
-                  >
-                    <div className="flex-1 space-y-2">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <MapPin className="w-4 h-4 text-primary" />
-                        <span className="font-medium">
-                          {record.city || "Unknown"}, {record.country || "Unknown"}
-                        </span>
-                        <span className="text-sm text-muted-foreground">
-                          IP: {record.ip_address}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                        <span className="flex items-center gap-1">
-                          <Monitor className="w-4 h-4" />
-                          {record.browser} - {record.os}
-                        </span>
-                        <span>
-                          {format(new Date(record.created_at), "PPp", { locale: vi })}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-end gap-2">
-                      {getRiskBadge(record.risk_score)}
-                      {record.is_suspicious && (
-                        <Badge variant="outline" className="text-warning border-warning">
-                          Đáng ngờ
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
       </main>
     </div>
   );
